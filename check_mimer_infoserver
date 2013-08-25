@@ -1,0 +1,146 @@
+#!/usr/bin/perl
+#
+#------------------------------------------------------------------------------
+# check_mimer_infoserver
+# 	retrieve info from mimer http server and check for given radio devices
+#
+#  -- David 'fenrus' Syk, david@syk.se
+# -----------------------------------------------------------------------------
+
+use strict;
+use Getopt::Std;
+use LWP::UserAgent;
+
+my $plugin_name = 'check_mimer_infoserver';
+my $version		= '0.01';
+
+my @radios;
+
+
+# getopt module config
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+
+# nagios exit codes
+use constant EXIT_OK		=> 0;
+use constant EXIT_WARNING	=> 1;
+use constant EXIT_CRITICAL	=> 2;
+use constant EXIT_UNKNOWN	=> 3;
+
+
+# parse cmd opts
+my %opts;
+getopts('vH:P:t:r:l:', \%opts);
+
+# set default values for timeout and port number
+$opts{t} = 60 unless (defined $opts{t});
+$opts{P} = 8080 unless (defined $opts{P});
+
+# allow listing of connected radio-devices
+if (defined $opts{l} and defined $opts{H}) {
+	getinfo();
+	exit EXIT_UNKNOWN;
+}
+
+# exit if not host and radio-number parameters are available 
+if (not (defined $opts{H} and defined $opts{r})) {
+	print "ERROR: INVALID USAGE\n";
+	HELP_MESSAGE();
+	exit EXIT_CRITICAL;
+}
+
+my $status = EXIT_OK;
+
+# call subroutine getinfo to fetch data from mimer infoserver-service
+getinfo();
+
+if ( defined $opts{r} ) {
+	# print $opts{r} ." was searched for\n";
+	my @search = grep(/^$opts{r},/i, @radios);		
+	if (@search) {
+		my $foo = @search[0];
+		my $radiostatus = (split ',',$foo)[2];
+		my $radioname = (split ',',$foo)[1];
+		if ($radiostatus eq "not connected") {
+			$status = EXIT_CRITICAL;	
+			print "CRITICAL: Radio ".$opts{r}." is not connected";
+		}
+		else {
+			print "OK: (". $opts{r} .") ". $radioname ." is ". $radiostatus ;
+			$status = EXIT_OK;	
+		}
+	} 
+	else {
+		print "CRITICAL: Radio ".$opts{r}." not found";
+		$status = EXIT_CRITICAL;	
+	}
+}
+
+print "\n";
+exit $status;
+
+sub getinfo {
+my $ua = LWP::UserAgent->new;
+$ua->timeout($opts{t});
+# retrieve url
+my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/");
+if (not $response->is_success) {
+	print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
+	$status = EXIT_UNKNOWN;
+} 
+else {
+	my $content = $response->content;
+	# infosite output
+	# number;description;status;
+	for (split /\n/, $content) {
+		# match all raido lines
+		if ($_ =~ m/^[0-9]/gsm) {
+			my $row = $_;
+			# the radio-number
+			my $radio = (split ';', $row)[0];
+			# the description
+			my $descr = (split ';', $row)[1];
+			# the status message
+			my $status = (split ';', $row)[2];
+			# store the data into an array
+			push (@radios, $radio .",".$descr.",".$status);
+			
+			#print the data as a list if parameter l is sent
+			if (defined $opts{l}) { print $radio .",".$descr.",".$status."\n"; }
+		}
+	}
+}
+}
+
+sub HELP_MESSAGE 
+{
+	print <<EOHELP
+	Retrieve data from mimer infoserver and check for radio status. 
+	Returns CRITICAL if requested device is not found or not connected. 
+	OK if found, otherwise UNKNOWN.
+	
+	--help      shows this message
+	--version   shows version information
+
+	-H          IP or hostname of the mimer server
+	-r <nr>     Radio number in the mimer server
+	-t          Timeout in seconds to wait for the webservice on mimer, 
+	            $plugin_name will exit with UNKNOWN state (default 60s)
+	-l yes      print list of available radios on server
+
+EOHELP
+
+;
+}
+
+
+sub VERSION_MESSAGE 
+{
+	print <<EOVM
+$plugin_name v. $version
+
+
+EOVM
+
+;
+}
+
