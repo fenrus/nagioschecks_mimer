@@ -1,21 +1,27 @@
 #!/usr/bin/perl
-#
+
 #------------------------------------------------------------------------------
 # check_mimer_infoserver
-# 	retrieve info from mimer http server and check for given radio devices
 #
-#  -- David 'fenrus' Syk, david@syk.se
+# 	retrieve info from mimer http server and check for given radio devices
+#       and users connected to the system. use ./check_mimer_infoserver for
+#       more information.
+# 
+#      -- David 'fenrus' Syk, 2013-12-01
+# 
 # -----------------------------------------------------------------------------
 
 use strict;
 use Getopt::Std;
 use LWP::UserAgent;
 
+use Data::Dumper;
+
 my $plugin_name = 'check_mimer_infoserver';
-my $version		= '0.01';
+my $version		= '0.03';
 
 my @radios;
-
+my @users;
 
 # getopt module config
 $Getopt::Std::STANDARD_HELP_VERSION = 1;
@@ -26,106 +32,269 @@ use constant EXIT_WARNING	=> 1;
 use constant EXIT_CRITICAL	=> 2;
 use constant EXIT_UNKNOWN	=> 3;
 
+# set default exitstatus
+my $status = EXIT_OK;
 
 # parse cmd opts
 my %opts;
-getopts('vH:P:t:r:l:', \%opts);
+getopts('vH:P:t:r:u:c:ld', \%opts);
 
 # set default values for timeout and port number
 $opts{t} = 60 unless (defined $opts{t});
 $opts{P} = 8080 unless (defined $opts{P});
 
-# allow listing of connected radio-devices
+if (defined $opts{r} and defined $opts{u}) {
+	# Check if user U is connected to device R.
+	my($exitstatus, $message) = getradiostatus($opts{r});
+	if ($exitstatus == 0) {
+		my($userstatus, $username, $viewed, $hidden, $disconnected) = getuserstatus($opts{u});
+		# exit fast if user is not available.	
+		if ($userstatus == "2") {
+			print "CRITICAL: User ". $opts{u}. " is not online or available\n";
+			my $status = EXIT_CRITICAL;
+			exit $status;
+		}
+
+		#create arrays of the users radios in different modes
+		push (my @disconnectedradio, (split ',',$disconnected));
+		push (my @hiddenradio, (split ',',$hidden));
+		push (my @viewedradio, (split ',',$viewed));
+	
+		if (defined $opts{d}) {
+			print "\nDEBUG: info for user array START\nDEBUG: disconnected radios\n". Dumper [@disconnectedradio];
+			print "DEBUG: hidden radios\n". Dumper [@hiddenradio];
+			print "DEBUG: viewed radios\n". Dumper [@viewedradio];
+			print "\nDEBUG: info for user array START\nDEBUG: userinfo START\n". $userstatus.",". $username.",".$viewed.",".$hidden.",".$disconnected."\nDEBUG: userinfo STOP\n";
+		}
+
+		my @searchradio = grep(/$opts{r}/i, @viewedradio);
+		if (@searchradio) {
+			print "OK: User ".$opts{u}. " (".$username.") is listening to ".$opts{r};
+			my $status = EXIT_OK;
+		}	
+		else {
+			print "CRITICAL: User ".$opts{u}. " (".$username.") is not listening to ".$opts{r};
+			my $status = EXIT_CRITICAL;
+		}
+	}
+	else { 
+		print "CRITICAL: User ".$opts{u}." is not listening to radio device ".$opts{r}." since the device is not available";
+		my $status = EXIT_OK;
+	}	
+}
+
 if (defined $opts{l} and defined $opts{H}) {
-	getinfo();
+	getinforadio();
+	getinfousers();
 	exit EXIT_UNKNOWN;
 }
 
-# exit if not host and radio-number parameters are available 
-if (not (defined $opts{H} and defined $opts{r})) {
+
+if (not (defined $opts{H} and defined $opts{r} or defined $opts{u})) {
 	print "ERROR: INVALID USAGE\n";
 	HELP_MESSAGE();
 	exit EXIT_CRITICAL;
 }
 
-my $status = EXIT_OK;
 
-# call subroutine getinfo to fetch data from mimer infoserver-service
-getinfo();
+if ( defined $opts{r} and not defined $opts{u}) {
+	# ONLY RADIO DEVICE CHECK
+	# call subroutine getradiostatus to fetch the radio status.
+	my ($status,$message) = getradiostatus($opts{r});
+	print $message;
+}
 
-if ( defined $opts{r} ) {
-	# print $opts{r} ." was searched for\n";
-	my @search = grep(/^$opts{r},/i, @radios);		
-	if (@search) {
-		my $foo = @search[0];
-		my $radiostatus = (split ',',$foo)[2];
-		my $radioname = (split ',',$foo)[1];
-		if ($radiostatus eq "not connected") {
-			$status = EXIT_CRITICAL;	
-			print "CRITICAL: Radio ".$opts{r}." is not connected";
-		}
-		else {
-			print "OK: (". $opts{r} .") ". $radioname ." is ". $radiostatus ;
-			$status = EXIT_OK;	
-		}
-	} 
+if ( defined $opts{u} and not defined $opts{r}) {
+	
+	my($userstatus, $username, $viewed, $hidden, $disconnected) = getuserstatus($opts{u});
+
+	if ( $userstatus == 0) {
+		print "OK: User ".$opts{u}." is online viewing ". $viewed;	
+		my $status = EXIT_OK;
+	}	
 	else {
-		print "CRITICAL: Radio ".$opts{r}." not found";
-		$status = EXIT_CRITICAL;	
+		print "CRITICAL: User ".$opts{u}." is not connected.";
+		my $status = EXIT_CRITICAL;
 	}
 }
+
 
 print "\n";
 exit $status;
 
-sub getinfo {
-my $ua = LWP::UserAgent->new;
-$ua->timeout($opts{t});
-# retrieve url
-my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/");
-if (not $response->is_success) {
-	print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
-	$status = EXIT_UNKNOWN;
-} 
-else {
-	my $content = $response->content;
-	# infosite output
-	# number;description;status;
-	for (split /\n/, $content) {
-		# match all raido lines
-		if ($_ =~ m/^[0-9]/gsm) {
-			my $row = $_;
-			# the radio-number
-			my $radio = (split ';', $row)[0];
-			# the description
-			my $descr = (split ';', $row)[1];
-			# the status message
-			my $status = (split ';', $row)[2];
-			# store the data into an array
-			push (@radios, $radio .",".$descr.",".$status);
-			
-			#print the data as a list if parameter l is sent
-			if (defined $opts{l}) { print $radio .",".$descr.",".$status."\n"; }
+sub getuserstatus {
+	my $user = @_[0];
+	my $message;
+
+	getinfousers();
+
+	my @search2 = grep(/^$user;/i, @users);
+
+	if (defined $opts{d}) {
+		print "\nDEBUG: in user: Print all users in array\n". Dumper(@users);
+		print "\nDEBUG: in user: Print all matching users in array\n". Dumper(@search2);
+	}
+
+	if (@search2) {
+		my $foo = @search2[0];
+		my $userid = (split ';',$foo)[0];
+		my $userip = (split ';',$foo)[1];
+		my $username = (split ';',$foo)[2];
+		my $viewed = (split ';',$foo)[3];
+		my $hidden = (split ';',$foo)[4];
+		my $disconnected = (split ';',$foo)[5];
+		$disconnected =~ s/^DISCONNECTED,|^DISCONNECTED//g;
+		$viewed =~ s/^VIEWED,|^VIEWED//g;
+		$hidden =~ s/^HIDDEN,|^HIDDEN//g;
+	
+		$status = EXIT_OK;
+		return ($status, $username, $viewed, $hidden, $disconnected)
+	}
+	else {
+		$status = EXIT_CRITICAL;
+		return ($status)
+	}
+}
+
+sub getradiostatus {
+	my $radio = @_[0];
+	my $message;
+
+	getinforadio();
+	
+	my @search = grep(/^$radio;/i, @radios);		
+
+	if (@search) {
+		my $foo = @search[0];
+		my $radiostatus = (split ';',$foo)[2];
+		my $radioname = (split ';',$foo)[1];
+
+		# if status is "not connected" this is a problem.
+		if ($radiostatus eq "not connected") {
+			$status = EXIT_CRITICAL;
+			my $message =  "CRITICAL: Device ".$radio." is not connected";
+			return ($status, $message);
+		}
+		else {
+			my $message= "OK: Device ". $radio .", ". $radioname ." is ". $radiostatus ;
+			$status = EXIT_OK;	
+			return ($status, $message);
+		}
+	}
+	# if we cant find the specified radio, this is a problem. 
+	else {
+		my $message = "CRITICAL: Device ".$radio." not found";
+		$status = EXIT_CRITICAL;	
+		return ($status, $message);
+	}
+}
+
+sub getinforadio {
+	my $ua = LWP::UserAgent->new;
+	$ua->timeout($opts{t});
+	# retrieve url
+	my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/Radios");
+	if (not $response->is_success) {
+		print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
+		$status = EXIT_UNKNOWN;
+	} 
+	else {
+		my $content = $response->content;
+		# infosite output
+		# Radiunumber;name;status;
+		# 113;Aurora;operating;
+		
+		#debugging prints the recieved content
+		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinforadio START\n".$content."DEBUG: Recieved content in getinforadio END\n\n"; }
+	
+		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
+		$content =~ s/\0/\n/g;
+		for (split /\n/, $content) {
+			# match all raido lines
+			if ($_ =~ m/^[0-9]/gsm) {
+				my $row = $_;
+	
+				# clean row from newlines and stuffs
+				$row =~ s/\R//g;
+	
+				push (@radios, $row);
+				
+				#if -l is requested, print the data
+				if (defined $opts{l}) { print "radio ".$row."\n"; }
+			}
 		}
 	}
 }
+
+sub getinfousers {
+	my $ua = LWP::UserAgent->new;
+	$ua->timeout($opts{t});
+	my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/Users");
+	if (not $response->is_success) {
+		print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
+		$status = EXIT_UNKNOWN;
+	} 
+	else {
+		my $content = $response->content;
+		# infosite output
+		# id;ip;name;VIEWING,1,2,3,4;hidden,5,6,7;DISCONNECTED,8,9,10,11;
+		# 12;192.168.0.77;Tipro BeeFree 10;VIEWED,121,113,116,126,191;HIDDEN,125;DISCONNECTED,9,125,103,119,121,148;
+	
+		#debugging prints the recieved content
+		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinfousers START\n".$content."DEBUG: Recieved content in getinfouesrs END\n\n"; }
+		
+		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
+		$content =~ s/\0/\n/g;
+		for (split /\n/, $content) {
+			# match all users lines
+			if ($_ =~ m/^[0-9]/gsm) {
+				my $row = $_;
+				
+				# clean row from newlines and stuffs
+				$row =~ s/\R//g;
+
+				# Put the data into an array
+				push (@users, $row);
+				
+				#if -l is requested, print the data
+				if (defined $opts{l}) { print "user ".$row."\n"; }
+			}
+		}
+	}
 }
 
-sub HELP_MESSAGE 
-{
+sub HELP_MESSAGE {
 	print <<EOHELP
-	Retrieve data from mimer infoserver and check for radio status. 
-	Returns CRITICAL if requested device is not found or not connected. 
-	OK if found, otherwise UNKNOWN.
+	
+	Retrieve data from mimer infoserver and check for radio and user 
+	status. Returns CRITICAL if requested device or user is not found 
+	or connected. OK if found, otherwise UNKNOWN.
 	
 	--help      shows this message
 	--version   shows version information
 
-	-H          IP or hostname of the mimer server
-	-r <nr>     Radio number in the mimer server
-	-t          Timeout in seconds to wait for the webservice on mimer, 
-	            $plugin_name will exit with UNKNOWN state (default 60s)
-	-l yes      print list of available radios on server
+	-H <hostname> IP or hostname of the mimer server
+	-t <seconds>  Timeout in seconds to wait for the webservice on mimer, 
+	              $plugin_name will exit with UNKNOWN state (default 60s)
+	
+	-r <nr>       Radio number in the mimer server
+	-u <nr>       User number in the mimer server
+	-c <nr>       Amount of users that should be connected to radio.
+
+	To help with setup:
+	-l            print list of available radios on server
+	-d            print debugging information
+
+	To check radio for basic status do:
+	\$ check_mimer_infoserver -H 192.0.2.160 -r 172
+
+	Provide both -u and -r to check 'is users U connected to device R.
+	example:
+	\$ check_mimer_infoserver -H 192.0.2.160 -r 172 -u 12 
+
+	Provide -r and -c to check 'does device R have at least C connected users'
+	example (not built yet):
+	\$ check_mimer_infoserver -H 192.0.2.160 -r 172 -c 1
 
 EOHELP
 
@@ -133,8 +302,7 @@ EOHELP
 }
 
 
-sub VERSION_MESSAGE 
-{
+sub VERSION_MESSAGE {
 	print <<EOVM
 $plugin_name v. $version
 
