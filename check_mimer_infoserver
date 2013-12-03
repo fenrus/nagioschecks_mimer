@@ -201,14 +201,12 @@ sub getinforadio {
 	else {
 		my $content = $response->content;
 		# infosite output
-		# Radiunumber;name;status;
-		# 113;Aurora;operating;
+		# Radiunumber;ip;name;status;
+		# 113;192.168.0.113;Aurora;operating;
 		
 		#debugging prints the recieved content
 		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinforadio START\n".$content."DEBUG: Recieved content in getinforadio END\n\n"; }
 	
-		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
-		$content =~ s/\0/\n/g;
 		for (split /\n/, $content) {
 			# match all raido lines
 			if ($_ =~ m/^[0-9]/gsm) {
@@ -243,8 +241,6 @@ sub getinfousers {
 		#debugging prints the recieved content
 		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinfousers START\n".$content."DEBUG: Recieved content in getinfouesrs END\n\n"; }
 		
-		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
-		$content =~ s/\0/\n/g;
 		for (split /\n/, $content) {
 			# match all users lines
 			if ($_ =~ m/^[0-9]/gsm) {
