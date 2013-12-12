@@ -1,0 +1,199 @@
+#!/usr/bin/perl
+
+#------------------------------------------------------------------------------
+# create_nagiosconfig
+#
+# 	retrieve info from mimer http server and check for given radio devices
+#       and users connected to the system and generate a basic set of nagios 
+#       config.
+# 
+#      -- David 'fenrus' Syk, 2013-12-12
+# 
+# -----------------------------------------------------------------------------
+
+use strict;
+use Getopt::Std;
+use LWP::UserAgent;
+
+use Data::Dumper;
+
+my $plugin_name = 'check_nagiosconfig';
+my $version		= '0.01';
+
+my @radios;
+my @users;
+
+# getopt module config
+$Getopt::Std::STANDARD_HELP_VERSION = 1;
+
+# parse cmd opts
+my %opts;
+getopts('vH:P:d', \%opts);
+
+# set default values for timeout,port and hostname
+$opts{t} = 60 unless (defined $opts{t});
+$opts{P} = 8080 unless (defined $opts{P});
+$opts{H} = "127.0.0.1" unless (defined $opts{H});
+
+my $radiolist;
+
+if ( defined $opts{H} and not defined $opts{v}) {
+	
+	# get information from the infoserver
+	getinforadio();
+	getinfousers();
+
+	print "# the radio objects goes here:\n";
+	foreach (@radios) {
+		#FIXME: my $ip = (split ';',$_)[0];
+		my $ip = "127.0.0.1";
+		my $radionumber = (split ';',$_)[0];
+		my $alias = (split ';',$_)[1];
+	
+		$radiolist = $radiolist. "radio-" .$radionumber.",";
+	 	
+		print "define host {\n";
+		print "	use			generic-host\n";
+		print "	host_name		radio-".$radionumber."\n";
+		print "	alias			".$alias."\n";
+		print "	address			".$ip."\n";
+		print "	parents			switch\n";
+		print "}\n";
+	 } 
+
+	# $radiolist will always contain one , too much at the end. we chop to remove it.
+	chop($radiolist);
+
+	print "\n# create a hostgroup for the devices:\n";
+	print "define hostgroup {\n";
+	print "	hostgroup_name	mimer-devices\n";
+	print "	alias 		mimer devices\n";
+	print "	members		".$radiolist."\n";
+	print "}\n";
+
+	print "\n#service checks for specific radios towards infoserver presented on device\n";
+	foreach (@radios) {
+		my $radionumber = (split ';',$_)[0];
+		my $alias = (split ';',$_)[1];
+	
+		$radiolist = $radiolist. "radio-" .$radionumber.",";
+	 	
+		print "define service {\n";
+		print "	use			generic-service\n";
+		print "	host_name		radio-".$radionumber."\n";
+		print "	service_description	radio\n";
+		print "	check_command		check_mimer_infoserver_radio!".$radionumber."\n";
+		print "	notification_interval	0\n";
+		print "}\n";
+	 } 
+
+
+#	print Dumper(@radios);
+
+
+}
+
+
+print "\n";
+exit 0;
+
+sub getinforadio {
+	my $ua = LWP::UserAgent->new;
+	$ua->timeout($opts{t});
+	# retrieve url
+	my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/Radios");
+	if (not $response->is_success) {
+		print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
+	} 
+	else {
+		my $content = $response->content;
+		# infosite output
+		# Radiunumber;name;status;
+		# 113;Aurora;operating;
+		
+		#debugging prints the recieved content
+		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinforadio START\n".$content."DEBUG: Recieved content in getinforadio END\n\n"; }
+	
+		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
+		$content =~ s/\0/\n/g;
+		for (split /\n/, $content) {
+			# match all raido lines
+			if ($_ =~ m/^[0-9]/gsm) {
+				my $row = $_;
+	
+				# clean row from newlines and stuffs
+				$row =~ s/\R//g;
+	
+				push (@radios, $row);
+				
+				#if -l is requested, print the data
+				if (defined $opts{l}) { print "radio ".$row."\n"; }
+			}
+		}
+	}
+}
+
+sub getinfousers {
+	my $ua = LWP::UserAgent->new;
+	$ua->timeout($opts{t});
+	my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/Users");
+	if (not $response->is_success) {
+		print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
+	} 
+	else {
+		my $content = $response->content;
+		# infosite output
+		# id;ip;name;VIEWING,1,2,3,4;hidden,5,6,7;DISCONNECTED,8,9,10,11;
+		# 12;192.168.0.77;Tipro BeeFree 10;VIEWED,121,113,116,126,191;HIDDEN,125;DISCONNECTED,9,125,103,119,121,148;
+	
+		#debugging prints the recieved content
+		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinfousers START\n".$content."DEBUG: Recieved content in getinfouesrs END\n\n"; }
+		
+		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
+		$content =~ s/\0/\n/g;
+		for (split /\n/, $content) {
+			# match all users lines
+			if ($_ =~ m/^[0-9]/gsm) {
+				my $row = $_;
+				
+				# clean row from newlines and stuffs
+				$row =~ s/\R//g;
+
+				# Put the data into an array
+				push (@users, $row);
+				
+				#if -l is requested, print the data
+				if (defined $opts{l}) { print "user ".$row."\n"; }
+			}
+		}
+	}
+}
+
+sub HELP_MESSAGE {
+	print <<EOHELP
+	
+	Retrieve data from mimer infoserver and check for radio and user 
+	status. Returns CRITICAL if requested device or user is not found 
+	or connected. OK if found, otherwise UNKNOWN.
+	
+	--help      shows this message
+	--version   shows version information
+
+	-H <hostname> IP or hostname of the mimer server, this will default
+	to 127.0.0.1 if not specified.	
+EOHELP
+
+;
+}
+
+
+sub VERSION_MESSAGE {
+	print <<EOVM
+$plugin_name v. $version
+
+
+EOVM
+
+;
+}
+
