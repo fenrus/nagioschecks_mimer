@@ -125,6 +125,7 @@ sub getinforadio {
 	my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/Radios");
 	if (not $response->is_success) {
 		print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
+		exit 1;
 	} 
 	else {
 		my $content = $response->content;
@@ -154,6 +155,7 @@ sub getinfousers {
 	my $response = $ua->get("http://". $opts{H} .":". $opts{P} ."/Users");
 	if (not $response->is_success) {
 		print "ERROR: CANNOT RETRIEVE URL: ", $response->status_line, "\n";
+		exit 1;
 	} 
 	else {
 		my $content = $response->content;
