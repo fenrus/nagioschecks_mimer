@@ -18,7 +18,8 @@ use LWP::UserAgent;
 use Data::Dumper;
 
 my $plugin_name = 'check_nagiosconfig';
-my $version		= '0.01';
+my $version		= '0.03';
+my $datestring = localtime();
 
 my @radios;
 my @users;
@@ -43,12 +44,32 @@ if ( defined $opts{H} and not defined $opts{v}) {
 	getinforadio();
 	getinfousers();
 
-	print "# the radio objects goes here:\n";
+	print "# configuration is genrated at ".$datestring."\n";	
+	print "#\n";
+	print "\n# Define the checkcommands that is required by the generated config goes here\n";
+	print "define command {\n	command_name 	check_mimer_infoserver\n	command_line	/usr/lib/nagios/plugins/check_mimer_infoserver -H \$HOSTADDRESS\$ -r \$ARG1\$ \n}\n";
+	print "define command {\n	command_name 	check_mimer_infoserver_radio\n	command_line	/usr/lib/nagios/plugins/check_mimer_infoserver -H 127.0.0.1 -r \$ARG1\$ \n}\n";
+	print "define command {\n	command_name 	check_mimer_user\n	command_line	/usr/lib/nagios/plugins/check_mimer_infoserver -H \$HOSTADDRESS\$ -u \$ARG1\$ \n}\n";
+	print "define command {\n	command_name 	check_mimer_useronradio\n	command_line	/usr/lib/nagios/plugins/check_mimer_infoserver -H \$HOSTADDRESS\$ -u \$ARG1\$ -r \$ARG2\$ \n}\n";
+
+	print "\n# Define hosts that always should exist\n";
+	print "define host {\n	use		generic-host\n	host_name	infoserver\n	alias		infoserver\n	address		127.0.0.1\n	parents		switch\n}\n";
+	print "define host {\n	use		generic-host\n	host_name	switch\n	alias		switch\n	address		127.0.0.1\n}\n";
+
+	print "\n# Define a hostgroup that contains all hosts\n";
+	print "define hostgroup {\n	hostgroup_name  all\n	alias           All hosts\n	members         *\n}\n";
+
+	print "\n# Define service-checks for infoserver\n";
+	print "define service {\n	use			generic-service\n	host_name		infoserver\n 	service_description	SYSTEM-Diskspace\n	check_command		check_all_disks!20%!10%\n}\n";
+	print "define service {\n	use			generic-service\n	host_name		infoserver\n	service_description	SYSTEM-Load\n	check_command		check_load!5.0!4.0!3.0!10.0!6.0!4.0\n}\n";
+	print "define service {\n	use			generic-service\n	hostgroup_name		all\n	service_description	Ping\n	check_command		check_ping!200.0,20%!500.0,60%\n}\n";
+
+
+	print "\n# Define radio-devices currently visible in infoserver \n";
 	foreach (@radios) {
-		#FIXME: my $ip = (split ';',$_)[0];
-		my $ip = "127.0.0.1";
 		my $radionumber = (split ';',$_)[0];
-		my $alias = (split ';',$_)[1];
+		my $ip = (split ';',$_)[1];
+		my $alias = (split ';',$_)[2];
 	
 		$radiolist = $radiolist. "radio-" .$radionumber.",";
 	 	
@@ -64,14 +85,17 @@ if ( defined $opts{H} and not defined $opts{v}) {
 	# $radiolist will always contain one , too much at the end. we chop to remove it.
 	chop($radiolist);
 
-	print "\n# create a hostgroup for the devices:\n";
+	print "\n# Define a hostgroup for all the radio-devices:\n";
 	print "define hostgroup {\n";
 	print "	hostgroup_name	mimer-devices\n";
 	print "	alias 		mimer devices\n";
 	print "	members		".$radiolist."\n";
 	print "}\n";
 
-	print "\n#service checks for specific radios towards infoserver presented on device\n";
+	print "\n# Define a hostextinfo to get icons visible in webgui\n";
+	print "define hostextinfo {\n	hostgroup_name	mimer-devices\n	notes		Mimerdevice\n	icon_image		base/mimer_radio.png\n	icon_image_alt	Mimerdevice\n	vrml_image	base/mimer_radio.png\n	statusmap_image	base/mimer_radio.png\n}\n";
+
+	print "\n# Define service checks for specific radios towards infoserver presented on device\n";
 	foreach (@radios) {
 		my $radionumber = (split ';',$_)[0];
 		my $alias = (split ';',$_)[1];
@@ -86,9 +110,6 @@ if ( defined $opts{H} and not defined $opts{v}) {
 		print "	notification_interval	0\n";
 		print "}\n";
 	 } 
-
-
-#	print Dumper(@radios);
 
 
 }
@@ -107,15 +128,9 @@ sub getinforadio {
 	} 
 	else {
 		my $content = $response->content;
-		# infosite output
-		# Radiunumber;name;status;
-		# 113;Aurora;operating;
-		
 		#debugging prints the recieved content
 		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinforadio START\n".$content."DEBUG: Recieved content in getinforadio END\n\n"; }
 	
-		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
-		$content =~ s/\0/\n/g;
 		for (split /\n/, $content) {
 			# match all raido lines
 			if ($_ =~ m/^[0-9]/gsm) {
@@ -142,15 +157,9 @@ sub getinfousers {
 	} 
 	else {
 		my $content = $response->content;
-		# infosite output
-		# id;ip;name;VIEWING,1,2,3,4;hidden,5,6,7;DISCONNECTED,8,9,10,11;
-		# 12;192.168.0.77;Tipro BeeFree 10;VIEWED,121,113,116,126,191;HIDDEN,125;DISCONNECTED,9,125,103,119,121,148;
-	
 		#debugging prints the recieved content
 		if (defined $opts{d}) { print "\n\nDEBUG: Recieved content in getinfousers START\n".$content."DEBUG: Recieved content in getinfouesrs END\n\n"; }
 		
-		# content formatting is a bit fishy. null byte as newline. replace this with real newline.
-		$content =~ s/\0/\n/g;
 		for (split /\n/, $content) {
 			# match all users lines
 			if ($_ =~ m/^[0-9]/gsm) {
@@ -172,9 +181,8 @@ sub getinfousers {
 sub HELP_MESSAGE {
 	print <<EOHELP
 	
-	Retrieve data from mimer infoserver and check for radio and user 
-	status. Returns CRITICAL if requested device or user is not found 
-	or connected. OK if found, otherwise UNKNOWN.
+	Retrieve data from mimer infoserver and create a basic configuration
+	for nagios to use.
 	
 	--help      shows this message
 	--version   shows version information
